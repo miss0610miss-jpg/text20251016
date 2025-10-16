@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>👻 萬聖節糖果抽獎機</title>
+    <!-- 載入 Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 載入 Noto Sans TC -->
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700;900&family=Bungee+Spice&display=swap" rel="stylesheet">
+    <style>
+        /* 定義可愛卡通萬聖節顏色 */
+        :root {
+            --color-purple: #8b5cf6; /* 紫色 */
+            --color-orange: #f97316; /* 亮橘色 */
+            --color-mint: #6ee7b7; /* 薄荷綠 */
+            --color-pink: #f472b6; /* 粉紅 */
+            --color-dark: #1f2937;
+        }
+        body {
+            font-family: 'Noto Sans TC', sans-serif;
+            background-color: var(--color-dark);
+            background-image: linear-gradient(135deg, var(--color-dark) 0%, #111827 100%);
+        }
+        .cute-title {
+            font-family: 'Bungee Spice', cursive; /* 搞怪字體 */
+            text-shadow: 3px 3px 0px var(--color-purple);
+        }
+        .draw-box {
+            background: rgba(31, 41, 55, 0.8);
+            backdrop-filter: blur(10px);
+            border: 4px solid var(--color-mint);
+            box-shadow: 0 0 40px rgba(100, 255, 100, 0.3);
+            transition: all 0.3s ease;
+        }
+        .draw-button {
+            transition: all 0.1s ease-in-out;
+            box-shadow: 0 6px 0 var(--color-purple);
+        }
+        .draw-button:active:not(:disabled) {
+            transform: translateY(4px);
+            box-shadow: 0 2px 0 var(--color-purple);
+        }
+        /* 抽獎動畫效果 */
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .spinner {
+            animation: spin 0.8s linear infinite;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col justify-center items-center p-4">
+
+    <!-- Firebase 初始化區塊 -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, collection, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        setLogLevel('Debug');
+        
+        let app = null;
+        let db = null;
+        let auth = null;
+        let currentUserId = 'anonymous';
+
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // 全域變數供抽獎邏輯使用
+        window.db = null;
+        window.currentUserId = null;
+        window.appId = appId;
+
+        if (firebaseConfig) {
+            try {
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                
+                // 認證登入
+                const authenticate = async () => {
+                    if (initialAuthToken) {
+                        await signInWithCustomToken(auth, initialAuthToken);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                    currentUserId = auth.currentUser.uid;
+                    window.db = db;
+                    window.currentUserId = currentUserId;
+                    console.log("Firebase: 已登入。UserID:", currentUserId);
+                    // 登入後啟動抽獎機檢查
+                    window.checkUserDrawStatus();
+                };
+
+                authenticate().catch(error => {
+                    console.error("Firebase: 認證失敗。", error.message);
+                    window.checkUserDrawStatus(); // 即使失敗也嘗試檢查，但功能將受限
+                });
+            } catch (e) {
+                console.error("Firebase: 初始化失敗。", e);
+            }
+        } else {
+            console.error("Firebase: 缺少設定，無法初始化。");
+            window.checkUserDrawStatus(); // 無法使用 Firebase 也啟動前端
+        }
+
+        // --- 抽獎邏輯 (供外部調用) ---
+
+        // 抽獎結果儲存路徑
+        function getDrawDocRef() {
+            if (!window.db || !window.currentUserId) return null;
+            // 私人資料路徑: /artifacts/{appId}/users/{userId}/draw_results/user_draw
+            return doc(db, 'artifacts', appId, 'users', currentUserId, 'draw_results', 'user_draw');
+        }
+        
+        // 檢查用戶是否已抽獎
+        window.checkUserDrawStatus = async () => {
+            const drawButton = document.getElementById('draw-button');
+            const statusMessage = document.getElementById('draw-status-message');
+            const docRef = getDrawDocRef();
+
+            if (!docRef) {
+                // 如果沒有 Firebase 或未登入，預設允許抽獎，但無法持久化
+                drawButton.disabled = false;
+                drawButton.innerHTML = '點擊抽糖果！ (未持久化)';
+                statusMessage.textContent = '請登入以保存您的抽獎結果。';
+                return;
+            }
+
+            try {
+                const docSnap = await getDoc(docRef);
+                if (docSnap.exists()) {
+                    const result = docSnap.data();
+                    drawButton.disabled = true;
+                    drawButton.innerHTML = '已抽獎 🍬';
+                    statusMessage.textContent = `您已經抽過了！獲得：${result.prize}。`;
+                    document.getElementById('result-message').textContent = `您上次抽到的獎品是：${result.prize}`;
+                    document.getElementById('result-message').classList.remove('hidden');
+                    console.log("用戶已抽獎，結果:", result.prize);
+                } else {
+                    drawButton.disabled = false;
+                    drawButton.innerHTML = '點擊抽糖果！';
+                    statusMessage.textContent = '每個帳號限抽一次！祝您好運！';
+                }
+            } catch (error) {
+                console.error("檢查抽獎狀態失敗:", error);
+                statusMessage.textContent = '無法檢查抽獎狀態，請稍後再試。';
+                drawButton.disabled = true;
+            }
+        };
+
+        // 儲存抽獎結果
+        window.saveDrawResult = async (prize) => {
+            const docRef = getDrawDocRef();
+            if (!docRef) {
+                console.warn("無法保存結果：Firebase 未準備好。");
+                return;
+            }
+            try {
+                await setDoc(docRef, {
+                    prize: prize,
+                    timestamp: new Date(),
+                }, { merge: true });
+                console.log("抽獎結果已保存:", prize);
+            } catch (error) {
+                console.error("保存抽獎結果失敗:", error);
+            }
+        };
+
+        window.onload = () => {
+             // 確保在腳本載入後，如果 Firebase 尚未就緒，也能顯示預設狀態
+            if (!window.db) {
+                window.checkUserDrawStatus();
+            }
+        };
+
+    </script>
+
+
+    <!-- 主要內容區塊 -->
+    <main class="w-full max-w-2xl mx-auto mt-12 mb-12">
+        <header class="text-center mb-10">
+            <h1 class="cute-title text-6xl sm:text-7xl md:text-8xl text-orange-400 mb-2 leading-none tracking-wider">
+                Ghost Candy Bash
+            </h1>
+            <p class="text-2xl text-pink-400 font-bold">
+                👻 幽靈糖果樂園 - 抽獎機 🍬
+            </p>
+        </header>
+
+        <!-- 抽獎機核心區塊 -->
+        <section id="draw-machine" class="draw-box rounded-2xl p-6 sm:p-10 text-center mx-auto">
+            
+            <h2 class="text-3xl font-extrabold mb-6 text-mint-300">
+                點擊抽一次！
+            </h2>
+
+            <!-- 結果顯示框 -->
+            <div id="result-display" class="bg-gray-800 p-8 rounded-lg mb-8 h-32 flex justify-center items-center text-gray-100 text-3xl font-bold border-4 border-purple-500 overflow-hidden">
+                <span id="prize-text">
+                    準備好接收您的萬聖節驚喜...
+                </span>
+            </div>
+
+            <!-- 抽獎按鈕 -->
+            <button id="draw-button" class="draw-button bg-orange-500 hover:bg-orange-400 text-gray-900 font-extrabold text-2xl py-4 px-10 rounded-xl uppercase tracking-wider transition duration-300" disabled>
+                <span class="spinner inline-block mr-2 hidden">🔄</span> 載入中...
+            </button>
+
+            <!-- 抽獎狀態訊息 -->
+            <p id="draw-status-message" class="mt-4 text-sm text-gray-400 min-h-[20px]"></p>
+            <p id="result-message" class="mt-4 text-lg text-pink-300 font-bold hidden">
+                <!-- 顯示上次結果 -->
+            </p>
+            
+            <div class="mt-6 text-left">
+                <h3 class="text-xl font-bold text-mint-300 mb-2">獎品清單：</h3>
+                <ul class="list-disc list-inside text-gray-300 text-sm grid grid-cols-2">
+                    <li>🎃 傑克南瓜王 (稀有) - 1%</li>
+                    <li>🍬 特級太妃糖 (普通) - 25%</li>
+                    <li>🍭 甜蜜棒棒糖 (普通) - 25%</li>
+                    <li>🕸️ 蜘蛛網軟糖 (普通) - 20%</li>
+                    <li>✨ 閃亮貼紙 (普通) - 15%</li>
+                    <li>❓ 驚嚇空包彈 (沒事發生) - 14%</li>
+                </ul>
+            </div>
+
+        </section>
+
+        <!-- 網站裝飾區塊 -->
+        <section class="mt-10 text-center">
+            <p class="text-xl text-purple-400 font-semibold">
+                祝您有個詭異又甜蜜的夜晚！
+            </p>
+        </section>
+
+    </main>
+
+    <!-- 頁腳 -->
+    <footer class="text-center py-4 text-gray-500 text-sm">
+        <p>由 VIBE CODING 驅動 | 萬聖節快樂！</p>
+    </footer>
+
+    <!-- JavaScript 抽獎核心邏輯 -->
+    <script>
+        const PRIZES = [
+            { name: "🎃 傑克南瓜王", weight: 1, color: 'text-red-500' }, // 稀有
+            { name: "🍬 特級太妃糖", weight: 25, color: 'text-orange-400' },
+            { name: "🍭 甜蜜棒棒糖", weight: 25, color: 'text-pink-400' },
+            { name: "🕸️ 蜘蛛網軟糖", weight: 20, color: 'text-mint-300' },
+            { name: "✨ 閃亮貼紙", weight: 15, color: 'text-yellow-300' },
+            { name: "❓ 驚嚇空包彈", weight: 14, color: 'text-gray-400' }, // 沒事發生
+        ];
+
+        function selectPrize() {
+            let totalWeight = PRIZES.reduce((sum, item) => sum + item.weight, 0);
+            let random = Math.random() * totalWeight;
+
+            for (const prize of PRIZES) {
+                if (random < prize.weight) {
+                    return prize;
+                }
+                random -= prize.weight;
+            }
+            // 預防性回傳 (應不發生)
+            return PRIZES[PRIZES.length - 1]; 
+        }
+
+        const drawButton = document.getElementById('draw-button');
+        const prizeText = document.getElementById('prize-text');
+        const spinner = document.querySelector('.spinner');
+
+        drawButton.addEventListener('click', async () => {
+            if (drawButton.disabled) return;
+
+            // 1. 抽獎開始狀態
+            drawButton.disabled = true;
+            spinner.classList.remove('hidden');
+            prizeText.textContent = '抽獎中... 緊張嗎？';
+            prizeText.className = 'transition-colors duration-500';
+            
+            // 2. 模擬抽獎動畫
+            const intervalDuration = 50; // ms
+            let cycle = 0;
+            const tempPrizes = ['🍬', '🍭', '🕸️', '✨', '👻'];
+
+            const spinningInterval = setInterval(() => {
+                const tempPrize = tempPrizes[cycle % tempPrizes.length];
+                prizeText.textContent = tempPrize + ' ' + tempPrize + ' ' + tempPrize;
+                cycle++;
+            }, intervalDuration);
+
+
+            // 3. 延遲後取得結果
+            await new Promise(resolve => setTimeout(resolve, 3000)); // 3秒動畫
+
+            clearInterval(spinningInterval);
+            spinner.classList.add('hidden');
+
+            const selected = selectPrize();
+            
+            // 4. 顯示結果
+            prizeText.textContent = `恭喜您獲得：${selected.name}！`;
+            prizeText.classList.add(selected.color);
+            drawButton.innerHTML = '已抽出！';
+            
+            // 5. 儲存結果並更新狀態
+            if (window.db && window.currentUserId) {
+                await window.saveDrawResult(selected.name);
+                window.checkUserDrawStatus(); // 再次檢查狀態以確保按鈕永久禁用
+            } else {
+                 // 無法持久化，但前端仍禁用
+                document.getElementById('draw-status-message').textContent = '抽獎成功，但因未連接 Firebase，您的結果不會被保存。';
+            }
+        });
+        
+    </script>
+</body>
+</html>
